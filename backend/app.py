@@ -1,10 +1,12 @@
 import base64
 import binascii
 import os
+import logging
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
+from google import genai
 
 load_dotenv()
 
@@ -17,6 +19,8 @@ CORS(
     allow_headers=["Content-Type"],
     methods=["GET", "POST", "OPTIONS"],
 )
+
+logging.basicConfig(level=logging.INFO)
 
 
 def call_gemini(prompt, image_bytes=None, mime_type=None):
@@ -33,44 +37,46 @@ def call_gemini(prompt, image_bytes=None, mime_type=None):
             "GEMINI_MODEL is empty in Render Environment Variables."
         )
 
-    from google import genai
-    from google.genai import types
-
     client = genai.Client(api_key=api_key)
 
-    contents = [prompt]
-
     if image_bytes is not None:
-        contents.append(
-            types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=mime_type or "image/jpeg",
-            )
+        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        response = client.interactions.create(
+            model=model,
+            input=[
+                {
+                    "type": "text",
+                    "text": prompt,
+                },
+                {
+                    "type": "image",
+                    "data": encoded_image,
+                    "mime_type": mime_type or "image/jpeg",
+                },
+            ],
+        )
+    else:
+        response = client.interactions.create(
+            model=model,
+            input=prompt,
         )
 
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-    )
-
-    result = getattr(response, "text", None)
+    result = getattr(response, "output_text", None)
 
     if not result or not result.strip():
-        raise RuntimeError(
-            "Gemini returned an empty response."
-        )
+        raise RuntimeError("Gemini returned an empty response.")
 
     return result.strip()
 
 
 def gemini_error(error):
-    # Detailed error is recorded in Render logs.
-    app.logger.exception(
-        "Gemini API request failed: %s",
-        error,
+    app.logger.error(
+        "Gemini API request failed: %s: %s",
+        type(error).__name__,
+        str(error),
     )
 
-    # Return a useful error to the frontend.
     return jsonify({
         "mode": "ERROR",
         "error": str(error),
@@ -106,7 +112,6 @@ def analyze_food():
 
     try:
         header, encoded = image_data.split(",", 1)
-
         mime_type = header.split(";")[0].split(":")[1].lower()
 
         if mime_type not in (
@@ -130,25 +135,24 @@ def analyze_food():
 
     except (ValueError, IndexError, binascii.Error):
         return jsonify({
-            "error": "Invalid image data. Please upload the image again."
+            "error": "Invalid image data. Please upload it again."
         }), 400
 
     prompt = """
 You are Food Verse AI, a careful food-information assistant.
 
-Analyze the provided food image using these headings:
+Analyze the provided food image and give these details:
 
-1. Likely food
+1. Likely food name
 2. Visible ingredients
 3. Approximate calories
 4. Approximate protein, carbohydrates and fat
 5. Visible freshness observations
-6. Limitations
+6. Limitations of the analysis
 
-Give nutrition values as rough estimates, not exact measurements.
-Mention uncertainty when portion sizes or ingredients are unclear.
-Never claim that food is safe to eat based on an image.
-Use simple, easy-to-understand language.
+Use simple language. Give nutrition values as estimates.
+Mention uncertainty about portion sizes and ingredients.
+Never claim that an image alone can confirm food safety.
 """
 
     try:
@@ -181,11 +185,11 @@ def assistant():
 You are Food Verse AI, a helpful cooking and nutrition assistant.
 
 Answer clearly and simply.
-Give recipe ideas and practical cooking instructions when relevant.
+Suggest recipes and practical cooking instructions when relevant.
 Treat nutrition values as approximate.
-For allergies, medical diets and food safety, advise checking labels
+For allergies and medical diets, advise checking food labels
 and consulting a qualified professional when necessary.
-Never guarantee that food is safe to eat.
+Never guarantee food safety.
 
 User question:
 {question.strip()}
@@ -213,13 +217,16 @@ def not_found(_error):
 @app.errorhandler(413)
 def file_too_large(_error):
     return jsonify({
-        "error": "Request is too large. Please use a smaller image."
+        "error": "Request is too large. Please upload a smaller image."
     }), 413
 
 
 @app.errorhandler(500)
 def internal_error(error):
-    app.logger.exception("Internal server error: %s", error)
+    app.logger.error(
+        "Internal server error: %s",
+        str(error),
+    )
 
     return jsonify({
         "error": "Internal server error. Please check Render logs."
