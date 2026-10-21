@@ -17,7 +17,8 @@ import {
   WandSparkles
 } from 'lucide-react'
 
-const API = 'https://foodverseai.onrender.com/api'
+// Correct Render backend URL
+const API = 'https://foodverseai-backend.onrender.com/api'
 
 export default function App() {
   const [tab, setTab] = useState('analyze')
@@ -35,11 +36,12 @@ export default function App() {
   function chooseImage(file) {
     setError('')
     setAnalysis('')
+    setAnswer('')
 
     if (!file) return
 
     if (!file.type.startsWith('image/')) {
-      setError('Please choose an image file (JPG, PNG, or WEBP).')
+      setError('Please choose a food image in JPG, PNG, or WEBP format.')
       return
     }
 
@@ -62,6 +64,44 @@ export default function App() {
     reader.readAsDataURL(file)
   }
 
+  async function sendRequest(endpoint, payload) {
+    let response
+
+    try {
+      response = await fetch(`${API}/${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      })
+    } catch {
+      throw new Error(
+        'Could not connect to the backend. Please check the backend URL and try again.'
+      )
+    }
+
+    let data
+
+    try {
+      data = await response.json()
+    } catch {
+      throw new Error(
+        `The backend returned an invalid response (HTTP ${response.status}).`
+      )
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        data.error ||
+        data.message ||
+        `Request failed with HTTP ${response.status}.`
+      )
+    }
+
+    return data
+  }
+
   async function analyzeImage() {
     if (!image) {
       setError('First, upload a food image.')
@@ -71,29 +111,22 @@ export default function App() {
     setBusy(true)
     setError('')
     setAnalysis('')
+    setAnswer('')
     setMode('')
 
     try {
-      const response = await fetch(`${API}/analyze-food`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ image })
-      })
+      const data = await sendRequest('analyze-food', { image })
 
-      const data = await response.json()
+      setAnalysis(
+        data.result ||
+        data.analysis ||
+        'The backend did not return an analysis result.'
+      )
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Food analysis failed.')
-      }
-
-      setAnalysis(data.result || 'No analysis result was returned.')
-      setMode(data.mode || 'DEMO')
+      setMode(data.mode || 'AI')
     } catch (err) {
       setError(
-        err.message ||
-        'Could not connect to the backend. Please try again.'
+        err.message || 'Food analysis failed. Please try again.'
       )
     } finally {
       setBusy(false)
@@ -111,31 +144,24 @@ export default function App() {
     setBusy(true)
     setError('')
     setAnswer('')
+    setAnalysis('')
     setMode('')
 
     try {
-      const response = await fetch(`${API}/assistant`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          question: question.trim()
-        })
+      const data = await sendRequest('assistant', {
+        question: question.trim()
       })
 
-      const data = await response.json()
+      setAnswer(
+        data.result ||
+        data.answer ||
+        'The assistant did not return an answer.'
+      )
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Could not get an answer.')
-      }
-
-      setAnswer(data.result || 'No answer was returned.')
-      setMode(data.mode || 'DEMO')
+      setMode(data.mode || 'AI')
     } catch (err) {
       setError(
-        err.message ||
-        'Could not connect to the backend. Please try again.'
+        err.message || 'Could not get an answer. Please try again.'
       )
     } finally {
       setBusy(false)
@@ -151,7 +177,7 @@ export default function App() {
     {
       icon: Salad,
       title: 'Nutrition insights',
-      text: 'Get cautious, approximate nutrition guidance.'
+      text: 'Get approximate nutrition guidance for your food.'
     },
     {
       icon: ShieldCheck,
@@ -174,6 +200,7 @@ export default function App() {
           onClick={(e) => {
             e.preventDefault()
             setTab('analyze')
+            setError('')
           }}
           aria-label="Food Verse AI home"
         >
@@ -239,8 +266,12 @@ export default function App() {
             </p>
 
             <div className="hero-points">
-              <span><Leaf size={16} /> Thoughtful insights</span>
-              <span><Clock3 size={16} /> Simple to use</span>
+              <span>
+                <Leaf size={16} /> Thoughtful insights
+              </span>
+              <span>
+                <Clock3 size={16} /> Simple to use
+              </span>
             </div>
           </div>
 
@@ -389,7 +420,7 @@ export default function App() {
 
                 <p className="privacy-note">
                   <ShieldCheck size={14} />
-                  Your image is used for this analysis request.
+                  Your image is sent to the backend for analysis.
                 </p>
               </div>
 
