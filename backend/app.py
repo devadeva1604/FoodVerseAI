@@ -9,17 +9,10 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Allow the deployed frontend to call the backend API.
+# CORS fix: allow the deployed frontend to access the API.
 CORS(
     app,
-    resources={
-        r"/api/*": {
-            "origins": [
-                "https://food-verse-ai-opal.vercel.app",
-                "https://food-verse-17m7rfzz4-foodai.vercel.app",
-            ]
-        }
-    },
+    resources={r"/api/*": {"origins": "*"}},
     allow_headers=["Content-Type"],
     methods=["GET", "POST", "OPTIONS"],
 )
@@ -29,11 +22,13 @@ def get_gemini_client():
     key = os.getenv("GEMINI_API_KEY", "").strip()
 
     if not key:
+        app.logger.warning("GEMINI_API_KEY is not configured.")
         return None
 
     try:
         from google import genai
         return genai.Client(api_key=key)
+
     except Exception:
         app.logger.exception("Could not initialize Gemini client.")
         return None
@@ -103,25 +98,35 @@ def analyze_food():
     try:
         header, encoded = image_data.split(",", 1)
         mime_type = header.split(";")[0].split(":")[1]
-        image_bytes = base64.b64decode(encoded, validate=True)
+        image_bytes = base64.b64decode(
+            encoded,
+            validate=True,
+        )
 
     except Exception:
         return jsonify({
-            "error": "Image format was not recognized. Please upload the image again."
+            "error": (
+                "Image format was not recognized. "
+                "Please upload the image again."
+            )
         }), 400
 
     prompt = (
         "You are Food Verse AI, a careful food-information assistant. "
-        "Analyze this image and answer using these headings: "
+        "Analyze this image using these headings: "
         "Likely food, Visible ingredients, Approximate nutrition, "
         "Visible freshness observations, and Limitations. "
         "Clearly label nutrition values as rough estimates. "
-        "Do not claim that food is safe to eat based on an image. "
+        "Do not claim food is safe to eat based on an image. "
         "Do not invent ingredients or exact calories when uncertain. "
         "Keep the answer easy to understand."
     )
 
-    result = call_gemini(prompt, image_bytes, mime_type)
+    result = call_gemini(
+        prompt,
+        image_bytes,
+        mime_type,
+    )
 
     if result:
         return jsonify({
@@ -132,11 +137,11 @@ def analyze_food():
     return jsonify({
         "mode": "DEMO",
         "result": (
-            "Demo mode is active because the Gemini AI service is "
-            "not currently available. Your image was received, "
-            "but AI analysis could not be completed. Check the "
-            "GEMINI_API_KEY and GEMINI_MODEL settings in Render."
-            "\n\nSafety note: freshness and food safety cannot be "
+            "The Gemini AI service is temporarily unavailable "
+            "or not configured correctly. Please try again later "
+            "or check the GEMINI_API_KEY and GEMINI_MODEL settings "
+            "in Render.\n\n"
+            "Safety note: freshness and food safety cannot be "
             "confirmed from an image alone."
         ),
     })
@@ -157,7 +162,7 @@ def assistant():
         "assistant. Answer clearly and concisely. For nutrition, "
         "say values are approximate unless measured. For allergies, "
         "medical diets, and food safety, recommend checking labels "
-        "and qualified advice; never guarantee safety.\n\n"
+        "and qualified advice. Never guarantee food safety.\n\n"
         "User question: " + question
     )
 
@@ -172,9 +177,9 @@ def assistant():
     return jsonify({
         "mode": "DEMO",
         "result": (
-            "The AI service is not currently available. Check the "
-            "GEMINI_API_KEY and GEMINI_MODEL settings in Render. "
-            "You can still use Food Verse AI's demo interface."
+            "The AI service is temporarily unavailable or not "
+            "configured correctly. Please try again later. "
+            "Check GEMINI_API_KEY and GEMINI_MODEL in Render."
         ),
     })
 
@@ -191,12 +196,12 @@ def internal_error(_error):
     app.logger.exception("Internal server error.")
 
     return jsonify({
-        "error": "An internal server error occurred. Please check the backend logs."
+        "error": "An internal server error occurred. "
+                 "Please check the backend logs."
     }), 500
 
 
 if __name__ == "__main__":
-    # Render provides its own PORT environment variable.
     port = int(os.environ.get("PORT", 5000))
 
     app.run(
