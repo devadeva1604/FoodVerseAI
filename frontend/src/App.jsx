@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react'
 import { Apple, ArrowRight, Camera, ChefHat, CircleHelp, Clock3, Leaf, LoaderCircle, MessageCircle, Salad, ShieldCheck, Sparkles, Upload, Utensils, WandSparkles } from 'lucide-react'
-
-const API = 'http://127.0.0.1:5000/api'
+const API = 'https://foodverseai.onrender.com/api'
 
 export default function App() {
   const [tab, setTab] = useState('analyze')
