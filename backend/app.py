@@ -28,7 +28,7 @@ def call_gemini(prompt, image_bytes=None, mime_type="image/jpeg"):
         if image_bytes:
             contents.append(types.Part.from_bytes(data=image_bytes, mime_type=mime_type))
         response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             contents=contents
         )
         return getattr(response, "text", None) or "The AI returned no text."
