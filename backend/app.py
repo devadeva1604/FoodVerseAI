@@ -1,4 +1,5 @@
 import base64
+import binascii
 import os
 
 from flask import Flask, jsonify, request
@@ -8,8 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
-# CORS fix: allow the deployed frontend to access the API.
 CORS(
     app,
     resources={r"/api/*": {"origins": "*"}},
@@ -18,54 +19,62 @@ CORS(
 )
 
 
-def get_gemini_client():
-    key = os.getenv("GEMINI_API_KEY", "").strip()
+def call_gemini(prompt, image_bytes=None, mime_type=None):
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 
-    if not key:
-        app.logger.warning("GEMINI_API_KEY is not configured.")
-        return None
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is missing in Render Environment Variables."
+        )
 
-    try:
-        from google import genai
-        return genai.Client(api_key=key)
+    if not model:
+        raise RuntimeError(
+            "GEMINI_MODEL is empty in Render Environment Variables."
+        )
 
-    except Exception:
-        app.logger.exception("Could not initialize Gemini client.")
-        return None
+    from google import genai
+    from google.genai import types
 
+    client = genai.Client(api_key=api_key)
 
-def call_gemini(prompt, image_bytes=None, mime_type="image/jpeg"):
-    client = get_gemini_client()
+    contents = [prompt]
 
-    if not client:
-        return None
-
-    try:
-        from google.genai import types
-
-        contents = [prompt]
-
-        if image_bytes:
-            contents.append(
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=mime_type,
-                )
+    if image_bytes is not None:
+        contents.append(
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=mime_type or "image/jpeg",
             )
-
-        response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-            contents=contents,
         )
 
-        return (
-            getattr(response, "text", None)
-            or "The AI returned no text."
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+    )
+
+    result = getattr(response, "text", None)
+
+    if not result or not result.strip():
+        raise RuntimeError(
+            "Gemini returned an empty response."
         )
 
-    except Exception:
-        app.logger.exception("Gemini request failed.")
-        return None
+    return result.strip()
+
+
+def gemini_error(error):
+    # Detailed error is recorded in Render logs.
+    app.logger.exception(
+        "Gemini API request failed: %s",
+        error,
+    )
+
+    # Return a useful error to the frontend.
+    return jsonify({
+        "mode": "ERROR",
+        "error": str(error),
+    }), 502
 
 
 @app.get("/")
@@ -90,98 +99,108 @@ def analyze_food():
     data = request.get_json(silent=True) or {}
     image_data = data.get("image", "")
 
-    if not image_data:
+    if not isinstance(image_data, str) or not image_data:
         return jsonify({
             "error": "Please upload a food image first."
         }), 400
 
     try:
         header, encoded = image_data.split(",", 1)
-        mime_type = header.split(";")[0].split(":")[1]
+
+        mime_type = header.split(";")[0].split(":")[1].lower()
+
+        if mime_type not in (
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+        ):
+            return jsonify({
+                "error": "Please upload a JPG, PNG, or WEBP image."
+            }), 400
+
         image_bytes = base64.b64decode(
             encoded,
             validate=True,
         )
 
-    except Exception:
+        if not image_bytes:
+            return jsonify({
+                "error": "The uploaded image is empty."
+            }), 400
+
+    except (ValueError, IndexError, binascii.Error):
         return jsonify({
-            "error": (
-                "Image format was not recognized. "
-                "Please upload the image again."
-            )
+            "error": "Invalid image data. Please upload the image again."
         }), 400
 
-    prompt = (
-        "You are Food Verse AI, a careful food-information assistant. "
-        "Analyze this image using these headings: "
-        "Likely food, Visible ingredients, Approximate nutrition, "
-        "Visible freshness observations, and Limitations. "
-        "Clearly label nutrition values as rough estimates. "
-        "Do not claim food is safe to eat based on an image. "
-        "Do not invent ingredients or exact calories when uncertain. "
-        "Keep the answer easy to understand."
-    )
+    prompt = """
+You are Food Verse AI, a careful food-information assistant.
 
-    result = call_gemini(
-        prompt,
-        image_bytes,
-        mime_type,
-    )
+Analyze the provided food image using these headings:
 
-    if result:
+1. Likely food
+2. Visible ingredients
+3. Approximate calories
+4. Approximate protein, carbohydrates and fat
+5. Visible freshness observations
+6. Limitations
+
+Give nutrition values as rough estimates, not exact measurements.
+Mention uncertainty when portion sizes or ingredients are unclear.
+Never claim that food is safe to eat based on an image.
+Use simple, easy-to-understand language.
+"""
+
+    try:
+        result = call_gemini(
+            prompt,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+        )
+
         return jsonify({
             "mode": "AI",
             "result": result,
         })
 
-    return jsonify({
-        "mode": "DEMO",
-        "result": (
-            "The Gemini AI service is temporarily unavailable "
-            "or not configured correctly. Please try again later "
-            "or check the GEMINI_API_KEY and GEMINI_MODEL settings "
-            "in Render.\n\n"
-            "Safety note: freshness and food safety cannot be "
-            "confirmed from an image alone."
-        ),
-    })
+    except Exception as error:
+        return gemini_error(error)
 
 
 @app.post("/api/assistant")
 def assistant():
     data = request.get_json(silent=True) or {}
-    question = (data.get("question") or "").strip()
+    question = data.get("question", "")
 
-    if not question:
+    if not isinstance(question, str) or not question.strip():
         return jsonify({
-            "error": "Type a question first."
+            "error": "Please enter a question first."
         }), 400
 
-    prompt = (
-        "You are Food Verse AI, a helpful cooking and nutrition "
-        "assistant. Answer clearly and concisely. For nutrition, "
-        "say values are approximate unless measured. For allergies, "
-        "medical diets, and food safety, recommend checking labels "
-        "and qualified advice. Never guarantee food safety.\n\n"
-        "User question: " + question
-    )
+    prompt = f"""
+You are Food Verse AI, a helpful cooking and nutrition assistant.
 
-    result = call_gemini(prompt)
+Answer clearly and simply.
+Give recipe ideas and practical cooking instructions when relevant.
+Treat nutrition values as approximate.
+For allergies, medical diets and food safety, advise checking labels
+and consulting a qualified professional when necessary.
+Never guarantee that food is safe to eat.
 
-    if result:
+User question:
+{question.strip()}
+"""
+
+    try:
+        result = call_gemini(prompt)
+
         return jsonify({
             "mode": "AI",
             "result": result,
         })
 
-    return jsonify({
-        "mode": "DEMO",
-        "result": (
-            "The AI service is temporarily unavailable or not "
-            "configured correctly. Please try again later. "
-            "Check GEMINI_API_KEY and GEMINI_MODEL in Render."
-        ),
-    })
+    except Exception as error:
+        return gemini_error(error)
 
 
 @app.errorhandler(404)
@@ -191,13 +210,19 @@ def not_found(_error):
     }), 404
 
 
+@app.errorhandler(413)
+def file_too_large(_error):
+    return jsonify({
+        "error": "Request is too large. Please use a smaller image."
+    }), 413
+
+
 @app.errorhandler(500)
-def internal_error(_error):
-    app.logger.exception("Internal server error.")
+def internal_error(error):
+    app.logger.exception("Internal server error: %s", error)
 
     return jsonify({
-        "error": "An internal server error occurred. "
-                 "Please check the backend logs."
+        "error": "Internal server error. Please check Render logs."
     }), 500
 
 
